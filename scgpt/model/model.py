@@ -12,8 +12,11 @@ from torch.distributions import Bernoulli
 from tqdm import trange
 
 try:
-    from flash_attn.flash_attention import FlashMHA
-
+    ## flash-attn<1.0.5, not working for more recent pytorch versions
+    # from flash_attn.flash_attention import FlashMHA
+    
+    # flash-attn==2.8.3, compatible with cuda128
+    from flash_attn.modules.mha import MHA as FlashMHA
     flash_attn_available = True
 except ImportError:
     import warnings

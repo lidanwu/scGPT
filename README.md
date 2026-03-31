@@ -1,6 +1,10 @@
-# scGPT
+# scGPT (modified)
 
-This is the official codebase for **scGPT: Towards Building a Foundation Model for Single-Cell Multi-omics Using Generative AI**.
+This repository is **modified** from the official codebase for **scGPT: Towards Building a Foundation Model for Single-Cell Multi-omics Using Generative AI**.
+
+The source code is changed to support `CUDA-12.8` and `flash-atten 2.8.0` such that one could run `scgpt` model on modern NVIDIA Blackwell GPU. 
+
+Below are readme from the original repository at https://github.com/bowang-lab/scGPT.git. 
 
 [![Preprint](https://img.shields.io/badge/preprint-available-brightgreen)](https://www.biorxiv.org/content/10.1101/2023.04.30.538439) &nbsp;
 [![Documentation](https://img.shields.io/badge/docs-available-brightgreen)](https://scgpt.readthedocs.io/en/latest/) &nbsp;

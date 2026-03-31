@@ -1,5 +1,6 @@
 import gc
 import math
+import warnings
 from typing import Dict, Mapping, Optional, Tuple, Any, Union
 
 import torch
@@ -11,18 +12,7 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from torch.distributions import Bernoulli
 from tqdm import trange
 
-try:
-    ## flash-attn<1.0.5, not working for more recent pytorch versions
-    # from flash_attn.flash_attention import FlashMHA
-    
-    # flash-attn==2.8.3, compatible with cuda128
-    from flash_attn.modules.mha import MHA as FlashMHA
-    flash_attn_available = True
-except ImportError:
-    import warnings
-
-    warnings.warn("flash_attn is not installed")
-    flash_attn_available = False
+from .flash_attn_compat import FlashMHA, flash_attn_available
 
 from .dsbn import DomainSpecificBatchNorm1d
 from .grad_reverse import grad_reverse

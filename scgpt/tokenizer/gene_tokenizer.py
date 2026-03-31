@@ -13,7 +13,11 @@ import torch
 # from transformers import AutoTokenizer, BertTokenizer
 
 from .. import logger
-from .vocab_compat import Vocab, from_torchtext_vocab, is_torchtext_vocab
+from .vocab_compat import (
+    Vocab,
+    from_torchtext_vocab,
+    is_torchtext_vocab,
+)
 
 
 class GeneVocab(Vocab):
@@ -152,7 +156,7 @@ class GeneVocab(Vocab):
 
         if specials is not None:
             for tok in specials:
-                del counter[tok]
+                counter.pop(tok, None)
 
         sorted_by_freq_tuples = sorted(counter.items(), key=lambda x: x[0])
         sorted_by_freq_tuples.sort(key=lambda x: x[1], reverse=True)

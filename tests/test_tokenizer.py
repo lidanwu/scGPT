@@ -2,9 +2,9 @@ import pytest
 from pathlib import Path
 from scgpt.tokenizer import GeneVocab, get_default_gene_vocab
 from scgpt.tokenizer.vocab_compat import (
-    Vocab,
-    vocab_backend,
-    torchtext_available,
+    BuiltinVocab,
+    gene_vocab_base_backend,
+    torchtext_import_succeeded,
     get_vocab_info,
     is_torchtext_vocab,
     from_torchtext_vocab,
@@ -62,15 +62,15 @@ def test_get_default_gene_vocab():
 # ---------------------------------------------------------------------------
 
 
-def test_vocab_backend_is_set():
-    """vocab_backend should be 'torchtext' or 'builtin'."""
-    assert vocab_backend in ("torchtext", "builtin")
+def test_gene_vocab_base_backend_is_set():
+    """gene_vocab_base_backend should be 'torchtext' or 'builtin'."""
+    assert gene_vocab_base_backend in ("torchtext", "builtin")
     assert isinstance(get_vocab_info(), str) and len(get_vocab_info()) > 0
 
 
 def test_builtin_vocab_basic():
     """Core Vocab API works independently of torchtext."""
-    v = Vocab(["a", "b", "c"])
+    v = BuiltinVocab(["a", "b", "c"])
     assert len(v) == 3
     assert v["a"] == 0
     assert v["c"] == 2
@@ -81,7 +81,7 @@ def test_builtin_vocab_basic():
 
 
 def test_builtin_vocab_default_index():
-    v = Vocab(["a", "b"], default_index=0)
+    v = BuiltinVocab(["a", "b"], default_index=0)
     # OOV token should return default index, not raise
     assert v["unknown"] == 0
     v.set_default_index(None)
@@ -90,7 +90,7 @@ def test_builtin_vocab_default_index():
 
 
 def test_builtin_vocab_append_insert():
-    v = Vocab(["a", "b"])
+    v = BuiltinVocab(["a", "b"])
     v.append_token("c")
     assert v["c"] == 2
     # append existing is a no-op
@@ -102,7 +102,7 @@ def test_builtin_vocab_append_insert():
     assert len(v) == 4
 
 
-@pytest.mark.skipif(not torchtext_available, reason="torchtext not installed")
+@pytest.mark.skipif(not torchtext_import_succeeded, reason="torchtext not installed")
 def test_is_torchtext_vocab():
     """is_torchtext_vocab correctly identifies torchtext Vocab objects."""
     from torchtext.vocab import vocab as build_tt_vocab
@@ -110,10 +110,10 @@ def test_is_torchtext_vocab():
 
     tt_vocab = build_tt_vocab(OrderedDict([("G1", 1), ("G2", 1)]))
     assert is_torchtext_vocab(tt_vocab)
-    assert not is_torchtext_vocab(Vocab(["G1", "G2"]))
+    assert not is_torchtext_vocab(BuiltinVocab(["G1", "G2"]))
 
 
-@pytest.mark.skipif(not torchtext_available, reason="torchtext not installed")
+@pytest.mark.skipif(not torchtext_import_succeeded, reason="torchtext not installed")
 def test_from_torchtext_vocab_conversion():
     """from_torchtext_vocab converts token/index mapping and default index."""
     from torchtext.vocab import vocab as build_tt_vocab
@@ -124,14 +124,14 @@ def test_from_torchtext_vocab_conversion():
     tt_vocab.set_default_index(tt_vocab["<pad>"])
 
     converted = from_torchtext_vocab(tt_vocab)
-    assert isinstance(converted, Vocab)
+    assert isinstance(converted, BuiltinVocab)
     for tok in tt_vocab.get_itos():
         assert converted[tok] == tt_vocab[tok]
     # default index must be propagated (torchtext -1 sentinel handled)
     assert converted.get_default_index() == tt_vocab.get_default_index()
 
 
-@pytest.mark.skipif(not torchtext_available, reason="torchtext not installed")
+@pytest.mark.skipif(not torchtext_import_succeeded, reason="torchtext not installed")
 def test_gene_vocab_init_from_torchtext():
     """GeneVocab() accepts a torchtext Vocab object directly."""
     from torchtext.vocab import vocab as build_tt_vocab

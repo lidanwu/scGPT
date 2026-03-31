@@ -20,9 +20,19 @@ from scgpt.model.flash_attn_compat import (
 
 def test_flash_attn_availability():
     """Test that flash-attn availability flag is set correctly."""
-    print(f"\nFlash-attn backend: {get_flash_attn_info()}")
-    # If flash-attn is installed, backend should be "fa1" or "fa2"
-    # If not installed, tests will be skipped via pytest.mark.skipif
+    info = get_flash_attn_info()
+    print(f"\nFlash-attn backend: {info}")
+
+    # Minimal sanity checks for backend detection API.
+    assert isinstance(info, str) and len(info) > 0
+    assert flash_attn_backend in {None, "fa1", "fa2"}
+
+    # Consistency checks between availability flag and backend value.
+    if flash_attn_available:
+        assert flash_attn_backend in {"fa1", "fa2"}
+        assert "flash-attn" in info
+    else:
+        assert flash_attn_backend is None
 
 
 @pytest.mark.skipif(not flash_attn_available, reason="flash-attn not installed")

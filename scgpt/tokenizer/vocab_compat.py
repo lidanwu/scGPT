@@ -1,20 +1,17 @@
 """
 Vocabulary backend compatibility module for scGPT.
 
-Probes for torchtext availability and provides a Vocab implementation
-that works regardless of whether torchtext is installed.
+This module prefers torchtext as the GeneVocab base class only when it is
+actually usable (import succeeds and the Vocab type is subclassable).
+Otherwise it falls back to a pure-Python implementation.
 
-Why not use torchtext.vocab.Vocab directly?
--------------------------------------------
+Why fallback is needed:
+----------------------
 torchtext <=0.13 exposed Vocab as a subclassable Python class.
 torchtext >=0.14 (including 0.18.0 shipped alongside PyTorch 2.x / CUDA 12.8)
-changed Vocab to a C++ extension type (VocabPybind) wrapped in a thin
-Python shim.  C++ extension types cannot be used as base classes in Python,
-so ``class GeneVocab(torchtext.vocab.Vocab)`` raises TypeError at import time.
-
-Therefore we always use the pure-Python Vocab below as the base class.
-When torchtext IS installed its Vocab objects are still accepted as input to
-GeneVocab() via duck-typed conversion (get_itos / get_default_index).
+changed Vocab to a C++ extension type (VocabPybind) wrapped in a thin Python
+shim. C++ extension types cannot be used as base classes in Python, so
+``class GeneVocab(torchtext.vocab.Vocab)`` raises TypeError at import time.
 """
 
 from typing import Dict, Iterable, List, Optional, Union
@@ -24,41 +21,64 @@ from typing import Dict, Iterable, List, Optional, Union
 # ---------------------------------------------------------------------------
 
 _torchtext_vocab_cls = None
-torchtext_available: bool = False
-torchtext_error: Optional[str] = None
+torchtext_import_succeeded: bool = False
+torchtext_import_error: Optional[str] = None
+torchtext_vocab_is_subclassable: bool = False
 
 try:
     from torchtext.vocab import Vocab as _torchtext_vocab_cls  # noqa: F401
 
-    torchtext_available = True
+    torchtext_import_succeeded = True
 except (ImportError, OSError) as exc:
-    torchtext_error = str(exc)
+    torchtext_import_error = str(exc)
 
-vocab_backend: str = "torchtext" if torchtext_available else "builtin"
+
+def _probe_torchtext_vocab_subclassable() -> bool:
+    """Return True when torchtext Vocab can be used as a Python base class."""
+    if not torchtext_import_succeeded or _torchtext_vocab_cls is None:
+        return False
+    try:
+        class _TorchtextVocabSubclassProbe(_torchtext_vocab_cls):
+            pass
+
+        return True
+    except TypeError:
+        return False
+
+
+torchtext_vocab_is_subclassable = _probe_torchtext_vocab_subclassable()
+gene_vocab_base_backend: str = (
+    "torchtext" if torchtext_vocab_is_subclassable else "builtin"
+)
 
 
 def get_vocab_info() -> str:
     """Return a human-readable description of the detected vocab configuration."""
-    if torchtext_available:
+    if torchtext_vocab_is_subclassable:
         return (
-            "torchtext detected — using built-in pure-Python Vocab as base class "
-            "(torchtext >=0.14 Vocab is a C++ extension type; not subclassable). "
-            "torchtext Vocab objects are accepted as input via duck-typed conversion."
+            "torchtext detected and subclassable; using torchtext Vocab as "
+            "GeneVocab base class."
         )
-    if torchtext_error is not None:
+    if torchtext_import_succeeded:
+        return (
+            "torchtext detected but not subclassable (likely torchtext >=0.14 "
+            "C++ Vocab); using built-in pure-Python Vocab as GeneVocab base "
+            "class."
+        )
+    if torchtext_import_error is not None:
         return (
             "torchtext import failed; using built-in pure-Python Vocab. "
-            f"Original error: {torchtext_error}"
+            f"Original error: {torchtext_import_error}"
         )
     return "torchtext not installed — using built-in pure-Python Vocab."
 
 
 # ---------------------------------------------------------------------------
-# Pure-Python Vocab (always the active implementation)
+# Pure-Python Vocab implementation
 # ---------------------------------------------------------------------------
 
 
-class Vocab:
+class BuiltinVocab:
     """
     Pure-Python bijective vocabulary: token <-> integer index.
 
@@ -199,13 +219,13 @@ def is_torchtext_vocab(obj: object) -> bool:
     this works regardless of the torchtext version.
     """
     return (
-        torchtext_available
+        torchtext_import_succeeded
         and _torchtext_vocab_cls is not None
         and isinstance(obj, _torchtext_vocab_cls)
     )
 
 
-def from_torchtext_vocab(tt_vocab) -> Vocab:
+def from_torchtext_vocab(tt_vocab) -> BuiltinVocab:
     """
     Convert a torchtext Vocab object to scGPT's pure-Python Vocab.
 
@@ -216,12 +236,18 @@ def from_torchtext_vocab(tt_vocab) -> Vocab:
         tt_vocab: A ``torchtext.vocab.Vocab`` instance.
 
     Returns:
-        Vocab: A new pure-Python Vocab with the same token-to-index mapping.
+        BuiltinVocab: A pure-Python Vocab with the same token-to-index mapping.
     """
     itos: List[str] = list(tt_vocab.get_itos())
-    v = Vocab(itos)
+    v = BuiltinVocab(itos)
     raw_default = tt_vocab.get_default_index()
     # torchtext uses -1 as "not set"; our Vocab uses None.
     if raw_default is not None and raw_default >= 0:
         v.set_default_index(raw_default)
     return v
+
+
+# Active base class symbol used by GeneVocab.
+Vocab = (
+    _torchtext_vocab_cls if torchtext_vocab_is_subclassable else BuiltinVocab
+)

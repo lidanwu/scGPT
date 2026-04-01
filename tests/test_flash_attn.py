@@ -126,12 +126,14 @@ def test_flash_mha_forward_with_mask():
     mha = mha.to(device)
 
     x = torch.randn(batch_size, seq_len, embed_dim, device=device)
+    # scGPT / PyTorch convention: True = padding, False = real token
     key_padding_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=device)
-    # Mark last 2 tokens as padding (True = pad, False = real)
     key_padding_mask[:, -2:] = True
+    # FlashMHA convention: True = keep, False = padding
+    valid_key_padding_mask = ~key_padding_mask
 
     with torch.no_grad():
-        out, attn_weights = mha(x, key_padding_mask=key_padding_mask)
+        out, attn_weights = mha(x, key_padding_mask=valid_key_padding_mask)
 
     assert out.shape == x.shape, f"Expected {x.shape}, got {out.shape}"
     assert attn_weights is None, "Flash attention should not return weights"
@@ -164,10 +166,13 @@ def test_flash_mha_mask_effect():
         out_no_mask, _ = mha(x)
 
     # Get output with mask
+    # scGPT / PyTorch convention: True = padding, False = real token
     key_padding_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=device)
     key_padding_mask[:, -2:] = True
+    # FlashMHA convention: True = keep, False = padding
+    valid_key_padding_mask = ~key_padding_mask
     with torch.no_grad():
-        out_with_mask, _ = mha(x, key_padding_mask=key_padding_mask)
+        out_with_mask, _ = mha(x, key_padding_mask=valid_key_padding_mask)
 
     # Outputs should differ (masked attention should ignore padded tokens)
     # Use a generous tolerance since different backends may have slight differences

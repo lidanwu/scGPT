@@ -14,6 +14,7 @@ import torch
 
 from .. import logger
 from .vocab_compat import (
+    BuiltinVocab,
     Vocab,
     from_torchtext_vocab,
     is_torchtext_vocab,
@@ -45,8 +46,8 @@ class GeneVocab(Vocab):
             default_token (str): Default token, by default will set to "<pad>",
                 if "<pad>" is in the vocabulary.
         """
-        if isinstance(gene_list_or_vocab, Vocab):
-            # Our own pure-Python Vocab or a GeneVocab instance.
+        if isinstance(gene_list_or_vocab, BuiltinVocab):
+            # Built-in vocab input path.
             if specials is not None:
                 raise ValueError(
                     "receive non-empty specials when init from a Vocab object."
@@ -56,17 +57,22 @@ class GeneVocab(Vocab):
                 default_index=gene_list_or_vocab.get_default_index(),
             )
         elif is_torchtext_vocab(gene_list_or_vocab):
-            # torchtext >=0.14 Vocab (C++ extension type, not subclassable).
-            # Convert via the public API; note torchtext uses -1 for "no default".
+            # torchtext vocab input path (works for both subclassable and
+            # non-subclassable torchtext variants).
             if specials is not None:
                 raise ValueError(
                     "receive non-empty specials when init from a Vocab object."
                 )
-            converted = from_torchtext_vocab(gene_list_or_vocab)
-            super().__init__(
-                converted.get_itos(),
-                default_index=converted.get_default_index(),
-            )
+            # Try the legacy torchtext init path first (expects .vocab handle).
+            try:
+                super().__init__(gene_list_or_vocab.vocab)
+            except Exception:
+                # Fallback to pure-Python conversion path.
+                converted = from_torchtext_vocab(gene_list_or_vocab)
+                super().__init__(
+                    converted.get_itos(),
+                    default_index=converted.get_default_index(),
+                )
         elif isinstance(gene_list_or_vocab, list):
             tokens = self._build_vocab_from_iterator(
                 gene_list_or_vocab,

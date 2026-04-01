@@ -8,7 +8,6 @@ upgrade path.
 
 import pytest
 import torch
-import torch.nn as nn
 
 from scgpt.model.flash_attn_compat import (
     FlashMHA,

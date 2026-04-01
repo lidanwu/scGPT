@@ -105,9 +105,10 @@ class FlashMHA(nn.Module):
               unsupported arguments (different FA2 versions vary in their accepted kwargs).
         
         Notes on key_padding_mask:
-            - Uses Transformer semantics: True=pad, False=real tokens.
-            - FA1 explicitly calls flash_attn_unpadded_qkvpacked_func with unpad_input.
-            - FA2 internally converts this to its native padding convention.
+            - Uses flash-attn convention: True=keep/valid token, False=masked token.
+            - This matches FA1 unpadding utilities and FA2 MHA behavior.
+            - Callers that use PyTorch Transformer masks (True=pad) should invert
+                the mask before calling this wrapper.
         """
         super().__init__()
         if not batch_first:
@@ -185,10 +186,11 @@ class FlashMHA(nn.Module):
         Args:
             x: Input tensor of shape (batch, seq_len, embed_dim).
             key_padding_mask: Optional bool mask of shape (batch, seq_len).
-                             True indicates padding tokens (should be ignored).
-                             False indicates real tokens (should be attended to).
-                             This follows Torch Transformer semantics and is 
-                             converted internally for FA2 (which uses opposite convention).
+                             True indicates valid tokens to keep.
+                             False indicates masked / padding tokens.
+                             This follows flash-attn convention (FA1 and FA2).
+                             If your upstream mask uses PyTorch Transformer semantics
+                             (True=pad), invert it before passing to FlashMHA.
             need_weights: Whether to return attention weights (rarely supported 
                          efficiently in flash attention). Default: False.
             **kwargs: Additional backend-specific arguments.
@@ -199,7 +201,7 @@ class FlashMHA(nn.Module):
                 - attn_weights_or_none: None (flash attention doesn't expose weights efficiently).
                 
         Notes:
-            - Both backends perform the padding optimization internally:
+              * Both backends perform padding-aware attention internally:
               * Unpad input to remove padding tokens
               * Run flash attention on the packed sequence
               * Pad output back to original shape

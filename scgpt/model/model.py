@@ -692,7 +692,8 @@ class FlashTransformerEncoderLayer(nn.Module):
         else:
             if src_key_padding_mask.dtype != torch.bool:
                 src_key_padding_mask = src_key_padding_mask.bool()
-            # NOTE: the FlashMHA uses mask 0 for padding tokens, which is the opposite
+            # PyTorch convention: True=padding. flash-attn convention: True=keep.
+            # Invert here so FlashMHA receives True for valid tokens.
             src_key_padding_mask_ = ~src_key_padding_mask
 
         if self.norm_scheme == "pre":

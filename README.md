@@ -3,6 +3,7 @@
 This repository is **modified** from the official codebase for **scGPT: Towards Building a Foundation Model for Single-Cell Multi-omics Using Generative AI**.
 
 The source code is changed to support `CUDA-12.8` and `flash-attn 2.8.3` such that one could run `scgpt` model on modern NVIDIA Blackwell GPU. 
+`pyproject.toml` is updated to to standard PEP 621 + `setuptools` so installs/builds no longer depend on Poetry tooling.
 
 Below is the README from the original repository at https://github.com/bowang-lab/scGPT.git. 
 

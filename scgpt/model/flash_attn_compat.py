@@ -249,3 +249,69 @@ class FlashMHA(nn.Module):
         if out.dtype != orig_dtype:
             out = out.to(orig_dtype)
         return out, None
+
+
+def get_flash_attn_parameter_rename_rules(
+    checkpoint_state_dict: dict,
+    current_backend: str = None,
+) -> dict:
+    """
+    Detect FA1 ↔ FA2 parameter naming mismatches and generate rename rules.
+    
+    **Issue Background:**
+    Due to internal wrapping differences, FA1 and FA2 backends expose parameters
+    at different nesting levels in the module hierarchy:
+    - FA1 (old checkpoints): `self_attn.Wqkv.weight`, `self_attn.out_proj.weight`, etc.
+    - FA2 (current): `self_attn._impl.Wqkv.weight`, `self_attn._impl.out_proj.weight`, etc.
+    
+    This function detects which version the checkpoint uses and generates rename rules
+    to convert to the current backend if needed.
+    
+    Args:
+        checkpoint_state_dict: The checkpoint state dict to inspect.
+        current_backend: Current flash-attn backend ("fa1", "fa2", or None for auto).
+                        If None, uses global flash_attn_backend. If None and no
+                        flash-attn available, returns empty dict.
+    
+    Returns:
+        Dict of rename rules {old_pattern: new_pattern} for regex-based renaming
+        in flexible_load_model_weights(..., rename_rules=...).
+        Empty dict if no mismatch detected or conversion not needed.
+        
+    Example:
+        >>> ckpt = torch.load("old_fa1_model.pt")
+        >>> rules = get_flash_attn_parameter_rename_rules(ckpt, current_backend="fa2")
+        >>> # rules = {r"self_attn\.Wqkv\.": "self_attn._impl.Wqkv.",
+        >>> #          r"self_attn\.out_proj\.": "self_attn._impl.out_proj."}
+    """
+    if current_backend is None:
+        current_backend = flash_attn_backend
+    
+    if current_backend is None or not checkpoint_state_dict:
+        return {}
+    
+    # Detect which version the checkpoint uses by examining parameter names
+    has_impl_wqkv = any("self_attn._impl.Wqkv" in k for k in checkpoint_state_dict.keys())
+    has_direct_wqkv = any(
+        "self_attn.Wqkv" in k and "self_attn._impl" not in k 
+        for k in checkpoint_state_dict.keys()
+    )
+    
+    # No mismatch: checkpoint already matches current backend pattern
+    if (current_backend == "fa2" and has_impl_wqkv) or \
+       (current_backend == "fa1" and has_direct_wqkv):
+        return {}
+    
+    # Mismatch: need conversion
+    rename_rules = {}
+    
+    if current_backend == "fa2" and has_direct_wqkv:
+        # Convert old FA1 (direct) → new FA2 (_impl wrapped)
+        rename_rules[r"self_attn\.Wqkv\."] = "self_attn._impl.Wqkv."
+        rename_rules[r"self_attn\.out_proj\."] = "self_attn._impl.out_proj."
+    elif current_backend == "fa1" and has_impl_wqkv:
+        # Convert FA2 (_impl wrapped) → FA1 (direct) [uncommon but supported]
+        rename_rules[r"self_attn\._impl\.Wqkv\."] = "self_attn.Wqkv."
+        rename_rules[r"self_attn\._impl\.out_proj\."] = "self_attn.out_proj."
+    
+    return rename_rules

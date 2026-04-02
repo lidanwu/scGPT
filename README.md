@@ -70,7 +70,7 @@ Here is the list of pretrained models. Please find the links for downloading the
 
 ## Fine-tune scGPT for scRNA-seq integration
 
-Please see our example code in [examples/finetune_integration.py](examples/finetune_integration.py). By default, the script assumes the scGPT checkpoint folder stored in the `scripts/examples/save` directory.
+Please see our example code in [examples/finetune_integration.py](examples/finetune_integration.py). By default, the script assumes the scGPT checkpoint folder stored in the `examples/save` directory.
 
 ## To-do-list
 

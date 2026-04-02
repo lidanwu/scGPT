@@ -13,7 +13,7 @@ For quick backend and memory-path checks in your environment, use the diagnostic
 `pyproject.toml` is also updated to standard PEP 621 + `setuptools` so installs/builds no longer depend on Poetry tooling.
 
 
-## Orignal README
+## Original README
 Below is the README from the original repository at https://github.com/bowang-lab/scGPT.git. 
 
 [![Preprint](https://img.shields.io/badge/preprint-available-brightgreen)](https://www.biorxiv.org/content/10.1101/2023.04.30.538439) &nbsp;

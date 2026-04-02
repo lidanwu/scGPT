@@ -8,6 +8,7 @@ upgrade path.
 
 import pytest
 import torch
+from torch import nn
 
 from scgpt.model.flash_attn_compat import (
     FlashMHA,
@@ -15,6 +16,38 @@ from scgpt.model.flash_attn_compat import (
     flash_attn_backend,
     get_flash_attn_info,
 )
+from scgpt.utils import load_pretrained
+
+
+class _FakeWrappedSelfAttnImpl(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.Wqkv = nn.Linear(4, 12, bias=True)
+        self.out_proj = nn.Linear(4, 4, bias=True)
+
+
+class _FakeWrappedSelfAttn(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self._impl = _FakeWrappedSelfAttnImpl()
+
+
+class _FakeFlashCheckpointTarget(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.self_attn = _FakeWrappedSelfAttn()
+        self.use_fast_transformer = True
+
+
+class _FakeTorchCheckpointTarget(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=4,
+            num_heads=1,
+            batch_first=True,
+        )
+        self.use_fast_transformer = False
 
 
 def _amp_dtype_for_device() -> torch.dtype:
@@ -48,6 +81,54 @@ def test_flash_attn_availability():
         assert "flash-attn" in info
     else:
         assert flash_attn_backend is None
+
+
+def test_load_pretrained_renames_direct_fa_attention_keys():
+    """Direct-layout FA checkpoints should load into wrapped flash-attn modules."""
+    model = _FakeFlashCheckpointTarget()
+
+    wqkv_weight = torch.full_like(model.self_attn._impl.Wqkv.weight, 1.25)
+    wqkv_bias = torch.full_like(model.self_attn._impl.Wqkv.bias, -0.5)
+    out_proj_weight = torch.full_like(model.self_attn._impl.out_proj.weight, 0.75)
+    out_proj_bias = torch.full_like(model.self_attn._impl.out_proj.bias, 0.125)
+
+    checkpoint = {
+        "self_attn.Wqkv.weight": wqkv_weight,
+        "self_attn.Wqkv.bias": wqkv_bias,
+        "self_attn.out_proj.weight": out_proj_weight,
+        "self_attn.out_proj.bias": out_proj_bias,
+    }
+
+    load_pretrained(model, checkpoint, verbose=False)
+
+    assert torch.equal(model.self_attn._impl.Wqkv.weight, wqkv_weight)
+    assert torch.equal(model.self_attn._impl.Wqkv.bias, wqkv_bias)
+    assert torch.equal(model.self_attn._impl.out_proj.weight, out_proj_weight)
+    assert torch.equal(model.self_attn._impl.out_proj.bias, out_proj_bias)
+
+
+def test_load_pretrained_renames_wrapped_flash_keys_for_torch_mha():
+    """Wrapped flash-attn checkpoints should load into non-flash PyTorch MHA targets."""
+    model = _FakeTorchCheckpointTarget()
+
+    in_proj_weight = torch.full_like(model.self_attn.in_proj_weight, 2.0)
+    in_proj_bias = torch.full_like(model.self_attn.in_proj_bias, -1.0)
+    out_proj_weight = torch.full_like(model.self_attn.out_proj.weight, 0.5)
+    out_proj_bias = torch.full_like(model.self_attn.out_proj.bias, 0.25)
+
+    checkpoint = {
+        "self_attn._impl.Wqkv.weight": in_proj_weight,
+        "self_attn._impl.Wqkv.bias": in_proj_bias,
+        "self_attn._impl.out_proj.weight": out_proj_weight,
+        "self_attn._impl.out_proj.bias": out_proj_bias,
+    }
+
+    load_pretrained(model, checkpoint, verbose=False)
+
+    assert torch.equal(model.self_attn.in_proj_weight, in_proj_weight)
+    assert torch.equal(model.self_attn.in_proj_bias, in_proj_bias)
+    assert torch.equal(model.self_attn.out_proj.weight, out_proj_weight)
+    assert torch.equal(model.self_attn.out_proj.bias, out_proj_bias)
 
 
 @pytest.mark.skipif(not flash_attn_available, reason="flash-attn not installed")

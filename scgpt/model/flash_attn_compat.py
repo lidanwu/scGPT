@@ -1,8 +1,12 @@
-import inspect
 from typing import Optional, Tuple
 
 import torch
 from torch import Tensor, nn
+
+try:
+    from einops import rearrange
+except (ImportError, OSError):
+    rearrange = None
 
 flash_attn_backend: Optional[str] = None
 flash_attn_error: Optional[str] = None
@@ -12,6 +16,10 @@ try:
     from flash_attn.flash_attention import FlashMHA as _FlashMHA1
 
     _FlashMHA2 = None
+    _fa2_qkvpacked_func = None
+    _fa2_varlen_qkvpacked_func = None
+    _fa2_unpad_input = None
+    _fa2_pad_input = None
     flash_attn_backend = "fa1"
     flash_attn_error = None
 except (ImportError, OSError) as exc:
@@ -20,11 +28,23 @@ except (ImportError, OSError) as exc:
     try:
         # flash-attn 2.x (fallback - use modules.mha.MHA)
         from flash_attn.modules.mha import MHA as _FlashMHA2
+        from flash_attn import (
+            flash_attn_qkvpacked_func as _fa2_qkvpacked_func,
+            flash_attn_varlen_qkvpacked_func as _fa2_varlen_qkvpacked_func,
+        )
+        from flash_attn.bert_padding import (
+            unpad_input as _fa2_unpad_input,
+            pad_input as _fa2_pad_input,
+        )
 
         flash_attn_backend = "fa2"
         flash_attn_error = None
     except (ImportError, OSError) as exc:
         _FlashMHA2 = None
+        _fa2_qkvpacked_func = None
+        _fa2_varlen_qkvpacked_func = None
+        _fa2_unpad_input = None
+        _fa2_pad_input = None
         flash_attn_error = str(exc)
 
 flash_attn_available = flash_attn_backend is not None
@@ -63,13 +83,14 @@ class FlashMHA(nn.Module):
       avoids FA2-specific complexity (rotary embeddings, MQA/GQA, varlen sequences, etc.)
       unless explicitly required. This ensures compatibility when only FA2 is available.
 
-    Both backends perform optimized attention computation:
-    - FA1: Explicit FlashAttention wrapper that calls flash_attn_unpadded_qkvpacked_func
-      with padding/unpadding (unpad_input, pad_input) for efficient mask handling.
-    - FA2: MHA module uses the same padding optimization internally. Our wrapper
-      uses simplified configuration (use_flash_attn=True with key_padding_mask=None,
-      falling back to dense if mask is provided) to maintain correctness and avoid
-      FA2's advanced feature constraints.
+    Both backends perform optimized attention computation.
+    FA2 path intentionally mirrors FA1 architecture layout:
+    - `Wqkv` projection
+    - `inner_attn` core
+    - `out_proj` projection
+
+    This preserves high-level semantics and parameter naming stability across
+    FA1/FA2, instead of exposing FA2's lower-level `MHA` internals directly.
     """
 
     def __init__(
@@ -146,32 +167,18 @@ class FlashMHA(nn.Module):
                 **kwargs,
             )
         else:
-            # FA2: Simplified wrapper - introspect constructor to avoid unsupported args
-            # (signature varies across 2.x builds).
-            sig_params = inspect.signature(_FlashMHA2.__init__).parameters
-            impl_kwargs = {
-                "embed_dim": embed_dim,
-                "num_heads": num_heads,
-                "causal": causal,
+            # FA2: Use FA1-shaped high-level wrapper on top of FA2 kernels.
+            # This keeps module semantics and parameter structure stable.
+            self._impl = _FA2FlashMHA(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                bias=bias,
+                batch_first=batch_first,
+                attention_dropout=attention_dropout,
+                causal=causal,
                 **factory_kwargs,
-            }
-
-            if "qkv_proj_bias" in sig_params:
-                impl_kwargs["qkv_proj_bias"] = bias
-            if "out_proj_bias" in sig_params:
-                impl_kwargs["out_proj_bias"] = bias
-            if "bias" in sig_params:
-                impl_kwargs["bias"] = bias
-            if "dropout" in sig_params:
-                impl_kwargs["dropout"] = attention_dropout
-            if "attention_dropout" in sig_params:
-                impl_kwargs["attention_dropout"] = attention_dropout
-            if "batch_first" in sig_params:
-                impl_kwargs["batch_first"] = batch_first
-            impl_kwargs.update(kwargs)
-
-            # FA2 MHA: handles QKV projection, attention, and output projection internally.
-            self._impl = _FlashMHA2(**impl_kwargs)
+                **kwargs,
+            )
 
     def forward(
         self,
@@ -212,8 +219,9 @@ class FlashMHA(nn.Module):
         if key_padding_mask is not None and key_padding_mask.dtype != torch.bool:
             key_padding_mask = key_padding_mask.bool()
 
+        # Both backend implementations support the same high-level forward contract.
         if self.backend == "fa1":
-            # FA1: Use need_weights parameter if supported
+            # Some flash-attn 1.x builds may not expose need_weights.
             try:
                 out = self._impl(
                     x,
@@ -222,7 +230,6 @@ class FlashMHA(nn.Module):
                     **kwargs,
                 )
             except TypeError as e:
-                # Some flash-attn 1.x builds may not expose need_weights.
                 if "need_weights" in str(e):
                     out = self._impl(
                         x,
@@ -232,10 +239,10 @@ class FlashMHA(nn.Module):
                 else:
                     raise
         else:
-            # FA2: Simplified wrapper - pass only supported arguments
             out = self._impl(
                 x,
                 key_padding_mask=key_padding_mask,
+                need_weights=need_weights,
                 **kwargs,
             )
 
@@ -251,6 +258,176 @@ class FlashMHA(nn.Module):
         return out, None
 
 
+class _FA2FlashAttention(nn.Module):
+    """FA2 attention core with FA1-style behavior and mask handling.
+
+    Supports:
+    - Packed path: qkv shape (B, S, 3, H, D) when no key_padding_mask.
+    - Varlen path: unpad/pad around flash_attn_varlen_qkvpacked_func when
+      key_padding_mask is provided (True=keep, False=pad).
+    """
+
+    def __init__(self, softmax_scale=None, attention_dropout=0.0):
+        super().__init__()
+        self.softmax_scale = softmax_scale
+        self.dropout_p = attention_dropout
+
+    def forward(
+        self,
+        qkv: Tensor,
+        key_padding_mask: Optional[Tensor] = None,
+        causal: bool = False,
+        cu_seqlens: Optional[Tensor] = None,
+        max_s: Optional[int] = None,
+        need_weights: bool = False,
+    ) -> Tuple[Tensor, Optional[Tensor]]:
+        if need_weights:
+            raise ValueError("flash-attn does not efficiently return attention weights")
+        if qkv.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                f"FA2 flash path requires fp16/bf16 qkv, got {qkv.dtype}. "
+                "Use torch.amp.autocast or explicit casting."
+            )
+        if not qkv.is_cuda:
+            raise ValueError("FA2 flash path requires CUDA tensors")
+
+        dropout_p = self.dropout_p if self.training else 0.0
+
+        # Explicit varlen mode (already unpadded by caller).
+        if cu_seqlens is not None:
+            if _fa2_varlen_qkvpacked_func is None:
+                raise ImportError("flash_attn_varlen_qkvpacked_func not available")
+            if max_s is None:
+                raise ValueError("max_s must be provided when cu_seqlens is set")
+            out = _fa2_varlen_qkvpacked_func(
+                qkv,
+                cu_seqlens,
+                max_s,
+                dropout_p,
+                softmax_scale=self.softmax_scale,
+                causal=causal,
+            )
+            return out, None
+
+        # Packed path without mask.
+        if key_padding_mask is None:
+            if _fa2_qkvpacked_func is None:
+                raise ImportError("flash_attn_qkvpacked_func not available")
+            out = _fa2_qkvpacked_func(
+                qkv,
+                dropout_p,
+                softmax_scale=self.softmax_scale,
+                causal=causal,
+            )
+            return out, None
+
+        # Packed path with mask -> unpad to varlen -> flash -> pad back.
+        if _fa2_unpad_input is None or _fa2_pad_input is None:
+            raise ImportError("flash_attn.bert_padding (unpad_input/pad_input) not available")
+        if _fa2_varlen_qkvpacked_func is None:
+            raise ImportError("flash_attn_varlen_qkvpacked_func not available")
+        if rearrange is None:
+            raise ImportError("einops is required for FA2 varlen wrapper path")
+
+        batch_size, seqlen, _, nheads, _ = qkv.shape
+        x = rearrange(qkv, "b s three h d -> b s (three h d)")
+        unpad_out = _fa2_unpad_input(x, key_padding_mask)
+        if len(unpad_out) == 4:
+            x_unpad, indices, cu_seqlens, max_s = unpad_out
+        elif len(unpad_out) == 5:
+            # Newer FA2 builds return an extra used-seqlens tensor.
+            x_unpad, indices, cu_seqlens, max_s, _ = unpad_out
+        else:
+            raise RuntimeError(
+                f"Unexpected unpad_input output tuple length: {len(unpad_out)}"
+            )
+        qkv_unpad = rearrange(x_unpad, "nnz (three h d) -> nnz three h d", three=3, h=nheads)
+
+        out_unpad = _fa2_varlen_qkvpacked_func(
+            qkv_unpad,
+            cu_seqlens,
+            max_s,
+            dropout_p,
+            softmax_scale=self.softmax_scale,
+            causal=causal,
+        )
+        out = rearrange(
+            _fa2_pad_input(rearrange(out_unpad, "nnz h d -> nnz (h d)"), indices, batch_size, seqlen),
+            "b s (h d) -> b s h d",
+            h=nheads,
+        )
+        return out, None
+
+
+class _FA2FlashMHA(nn.Module):
+    """FA1-shaped high-level MHA wrapper implemented with FA2 kernels.
+
+    Mirrors FA1 public structure and parameter names:
+    - Wqkv
+    - inner_attn
+    - out_proj
+    """
+
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        bias=True,
+        batch_first=True,
+        attention_dropout=0.0,
+        causal=False,
+        device=None,
+        dtype=None,
+        **kwargs,
+    ) -> None:
+        if kwargs:
+            # Keep behavior explicit: this wrapper intentionally exposes a narrow
+            # FA1-style API surface.
+            unexpected = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(f"Unsupported kwargs for _FA2FlashMHA: {unexpected}")
+        if not batch_first:
+            raise ValueError("_FA2FlashMHA supports batch_first=True only")
+        if embed_dim % num_heads != 0:
+            raise ValueError(
+                f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})"
+            )
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.causal = causal
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+
+        self.Wqkv = nn.Linear(embed_dim, 3 * embed_dim, bias=bias, **factory_kwargs)
+        self.inner_attn = _FA2FlashAttention(attention_dropout=attention_dropout)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
+
+    def forward(
+        self,
+        x: Tensor,
+        key_padding_mask: Optional[Tensor] = None,
+        need_weights: bool = False,
+        **kwargs,
+    ) -> Tuple[Tensor, Optional[Tensor]]:
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(f"Unsupported kwargs for _FA2FlashMHA.forward: {unexpected}")
+        if rearrange is None:
+            raise ImportError("einops is required for _FA2FlashMHA")
+
+        qkv = self.Wqkv(x)
+        qkv = rearrange(qkv, "b s (three h d) -> b s three h d", three=3, h=self.num_heads)
+        context, attn_weights = self.inner_attn(
+            qkv,
+            key_padding_mask=key_padding_mask,
+            need_weights=need_weights,
+            causal=self.causal,
+        )
+        out = self.out_proj(rearrange(context, "b s h d -> b s (h d)"))
+        return out, attn_weights
+
+
 def get_flash_attn_parameter_rename_rules(
     checkpoint_state_dict: dict,
     current_backend: str = None,
@@ -259,10 +436,12 @@ def get_flash_attn_parameter_rename_rules(
     Detect FA1 ↔ FA2 parameter naming mismatches and generate rename rules.
     
     **Issue Background:**
-    Due to internal wrapping differences, FA1 and FA2 backends expose parameters
-    at different nesting levels in the module hierarchy:
-    - FA1 (old checkpoints): `self_attn.Wqkv.weight`, `self_attn.out_proj.weight`, etc.
-    - FA2 (current): `self_attn._impl.Wqkv.weight`, `self_attn._impl.out_proj.weight`, etc.
+    Historical checkpoints may use one of two naming layouts:
+    - Direct layout: `self_attn.Wqkv.weight`, `self_attn.out_proj.weight`, etc.
+    - Wrapped layout: `self_attn._impl.Wqkv.weight`, `self_attn._impl.out_proj.weight`, etc.
+
+    Current compatibility wrapper stores attention parameters under wrapped
+    layout (`self_attn._impl.*`) for both FA1 and FA2 backends.
     
     This function detects which version the checkpoint uses and generates rename rules
     to convert to the current backend if needed.
@@ -297,21 +476,16 @@ def get_flash_attn_parameter_rename_rules(
         for k in checkpoint_state_dict.keys()
     )
     
-    # No mismatch: checkpoint already matches current backend pattern
-    if (current_backend == "fa2" and has_impl_wqkv) or \
-       (current_backend == "fa1" and has_direct_wqkv):
+    # Current target layout (both FA1/FA2): wrapped keys under self_attn._impl.*
+    if has_impl_wqkv:
         return {}
     
     # Mismatch: need conversion
     rename_rules = {}
     
-    if current_backend == "fa2" and has_direct_wqkv:
-        # Convert old FA1 (direct) → new FA2 (_impl wrapped)
+    if has_direct_wqkv:
+        # Convert direct layout -> wrapped layout
         rename_rules[r"self_attn\.Wqkv\."] = "self_attn._impl.Wqkv."
         rename_rules[r"self_attn\.out_proj\."] = "self_attn._impl.out_proj."
-    elif current_backend == "fa1" and has_impl_wqkv:
-        # Convert FA2 (_impl wrapped) → FA1 (direct) [uncommon but supported]
-        rename_rules[r"self_attn\._impl\.Wqkv\."] = "self_attn.Wqkv."
-        rename_rules[r"self_attn\._impl\.out_proj\."] = "self_attn.out_proj."
     
     return rename_rules

@@ -17,6 +17,22 @@ from scgpt.model.flash_attn_compat import (
 )
 
 
+def _amp_dtype_for_device() -> torch.dtype:
+    """Pick a stable mixed-precision dtype for CUDA tests."""
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
+def _run_with_amp(fn):
+    """Run fn() under CUDA autocast when CUDA is available."""
+    if not torch.cuda.is_available():
+        return fn()
+    amp_dtype = _amp_dtype_for_device()
+    with torch.amp.autocast(device_type="cuda", dtype=amp_dtype):
+        return fn()
+
+
 def test_flash_attn_availability():
     """Test that flash-attn availability flag is set correctly."""
     info = get_flash_attn_info()
@@ -97,10 +113,11 @@ def test_flash_mha_forward_no_mask():
     )
     mha = mha.to(device)
 
-    x = torch.randn(batch_size, seq_len, embed_dim, device=device)
+    # Keep source tensor float32 and rely on autocast to match real training/inference usage.
+    x = torch.randn(batch_size, seq_len, embed_dim, device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        out, attn_weights = mha(x)
+        out, attn_weights = _run_with_amp(lambda: mha(x))
 
     assert out.shape == x.shape, f"Expected {x.shape}, got {out.shape}"
     assert attn_weights is None, "Flash attention should not return weights"
@@ -125,7 +142,7 @@ def test_flash_mha_forward_with_mask():
     )
     mha = mha.to(device)
 
-    x = torch.randn(batch_size, seq_len, embed_dim, device=device)
+    x = torch.randn(batch_size, seq_len, embed_dim, device=device, dtype=torch.float32)
     # scGPT / PyTorch convention: True = padding, False = real token
     key_padding_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=device)
     key_padding_mask[:, -2:] = True
@@ -133,7 +150,9 @@ def test_flash_mha_forward_with_mask():
     valid_key_padding_mask = ~key_padding_mask
 
     with torch.no_grad():
-        out, attn_weights = mha(x, key_padding_mask=valid_key_padding_mask)
+        out, attn_weights = _run_with_amp(
+            lambda: mha(x, key_padding_mask=valid_key_padding_mask)
+        )
 
     assert out.shape == x.shape, f"Expected {x.shape}, got {out.shape}"
     assert attn_weights is None, "Flash attention should not return weights"
@@ -159,11 +178,13 @@ def test_flash_mha_mask_effect():
     mha = mha.to(device)
     mha.eval()
 
-    x = torch.randn(batch_size, seq_len, embed_dim, device=device, requires_grad=False)
+    x = torch.randn(
+        batch_size, seq_len, embed_dim, device=device, dtype=torch.float32, requires_grad=False
+    )
 
     # Get output without mask
     with torch.no_grad():
-        out_no_mask, _ = mha(x)
+        out_no_mask, _ = _run_with_amp(lambda: mha(x))
 
     # Get output with mask
     # scGPT / PyTorch convention: True = padding, False = real token
@@ -172,12 +193,14 @@ def test_flash_mha_mask_effect():
     # FlashMHA convention: True = keep, False = padding
     valid_key_padding_mask = ~key_padding_mask
     with torch.no_grad():
-        out_with_mask, _ = mha(x, key_padding_mask=valid_key_padding_mask)
+        out_with_mask, _ = _run_with_amp(
+            lambda: mha(x, key_padding_mask=valid_key_padding_mask)
+        )
 
     # Outputs should differ (masked attention should ignore padded tokens)
     # Use a generous tolerance since different backends may have slight differences
     assert not torch.allclose(
-        out_no_mask, out_with_mask, atol=1e-2
+        out_no_mask.float(), out_with_mask.float(), atol=1e-2
     ), "Mask did not affect output as expected"
 
 
@@ -200,12 +223,89 @@ def test_flash_mha_causal():
     )
     mha = mha.to(device)
 
-    x = torch.randn(batch_size, seq_len, embed_dim, device=device)
+    x = torch.randn(batch_size, seq_len, embed_dim, device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        out, attn_weights = mha(x)
+        out, attn_weights = _run_with_amp(lambda: mha(x))
 
     assert out.shape == x.shape, f"Expected {x.shape}, got {out.shape}"
+
+
+@pytest.mark.skipif(not flash_attn_available, reason="flash-attn not installed")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_fa2_float32_without_amp_raises():
+    """FA2 flash path should fail loudly on float32 without autocast/cast."""
+    if flash_attn_backend != "fa2":
+        pytest.skip("FA2-specific contract test")
+
+    mha = FlashMHA(
+        embed_dim=128,
+        num_heads=4,
+        batch_first=True,
+        attention_dropout=0.0,
+    ).to("cuda")
+    x = torch.randn(2, 8, 128, device="cuda", dtype=torch.float32)
+
+    with torch.no_grad(), pytest.raises(ValueError, match="fp16/bf16"):
+        _ = mha(x)
+
+
+@pytest.mark.skipif(not flash_attn_available, reason="flash-attn not installed")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_fa1_float32_without_amp_behavior():
+    """FA1 env contract: raw float32 input should either run or fail with a clear dtype error.
+
+    We don't force one strict behavior because FA1 builds differ across versions,
+    but we ensure behavior is explicit and non-silent.
+    """
+    if flash_attn_backend != "fa1":
+        pytest.skip("FA1-specific contract test")
+
+    mha = FlashMHA(
+        embed_dim=128,
+        num_heads=4,
+        batch_first=True,
+        attention_dropout=0.0,
+    ).to("cuda")
+    x = torch.randn(2, 8, 128, device="cuda", dtype=torch.float32)
+
+    with torch.no_grad():
+        try:
+            out, attn_weights = mha(x)
+            assert out.shape == x.shape
+            assert attn_weights is None
+        except (AssertionError, RuntimeError, ValueError) as e:
+            msg = str(e)
+            # Typical FA1 failure signatures mention supported dtypes.
+            assert any(k in msg for k in ["float16", "bfloat16", "dtype", "Half", "BFloat"])
+
+
+@pytest.mark.skipif(not flash_attn_available, reason="flash-attn not installed")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_fa1_with_amp_forward_no_mask():
+    """FA1 env sanity: AMP path should work and preserve output shape."""
+    if flash_attn_backend != "fa1":
+        pytest.skip("FA1-specific forward test")
+
+    embed_dim = 128
+    num_heads = 4
+    batch_size = 2
+    seq_len = 12
+    device = "cuda"
+
+    mha = FlashMHA(
+        embed_dim=embed_dim,
+        num_heads=num_heads,
+        batch_first=True,
+        attention_dropout=0.0,
+    ).to(device)
+
+    x = torch.randn(batch_size, seq_len, embed_dim, device=device, dtype=torch.float32)
+    with torch.no_grad():
+        out, attn_weights = _run_with_amp(lambda: mha(x))
+
+    assert out.shape == x.shape
+    assert attn_weights is None
 
 
 @pytest.mark.skipif(not flash_attn_available, reason="flash-attn not installed")

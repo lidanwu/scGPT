@@ -25,7 +25,9 @@ from sklearn.model_selection import train_test_split
 
 from scgpt.tokenizer.gene_tokenizer import GeneVocab
 
-sys.path.append("../")
+# Add repository root so local `scgpt` package can be imported when running
+# this script from scripts/examples.
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 import scgpt as scg
 from scgpt.model import TransformerModel, AdversarialDiscriminator
 from scgpt.tokenizer import tokenize_and_pad_batch, random_mask_value

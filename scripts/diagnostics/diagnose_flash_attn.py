@@ -106,8 +106,11 @@ def _make_mha_hook(layer_idx: int):
             "input_dtype": str(x.dtype),
             "input_shape": tuple(x.shape),
             "autocast_enabled": torch.is_autocast_enabled(),
-            "autocast_dtype": str(torch.get_autocast_dtype("cuda"))
-                              if torch.is_autocast_enabled() else "N/A",
+            "autocast_dtype": str(
+                torch.get_autocast_dtype("cuda")          # torch >= 2.1
+                if hasattr(torch, "get_autocast_dtype")
+                else torch.get_autocast_gpu_dtype()       # torch 2.0.x
+            ) if torch.is_autocast_enabled() else "N/A",
         })
     return hook
 
@@ -177,8 +180,14 @@ def probe(
     torch.cuda.reset_peak_memory_stats(device)
     _hook_reports.clear()
 
-    ctx_amp = torch.amp.autocast(device_type="cuda", enabled=amp,
-                                  dtype=torch.bfloat16 if amp else torch.float32)
+    # torch.amp.autocast (device_type=) requires torch >= 2.1;
+    # fall back to torch.cuda.amp.autocast for torch 2.0.x.
+    if hasattr(torch.amp, "autocast"):
+        ctx_amp = torch.amp.autocast(device_type="cuda", enabled=amp,
+                                     dtype=torch.bfloat16 if amp else torch.float32)
+    else:
+        ctx_amp = torch.cuda.amp.autocast(enabled=amp,
+                                          dtype=torch.bfloat16 if amp else torch.float32)
 
     use_batch_lbl = model.use_batch_labels
     with torch.no_grad(), ctx_amp:

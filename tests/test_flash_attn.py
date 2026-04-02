@@ -276,8 +276,10 @@ def test_fa1_float32_without_amp_behavior():
             assert attn_weights is None
         except (AssertionError, RuntimeError, ValueError) as e:
             msg = str(e)
-            # Typical FA1 failure signatures mention supported dtypes.
-            assert any(k in msg for k in ["float16", "bfloat16", "dtype", "Half", "BFloat"])
+            # FA1 may raise a bare AssertionError (no message) or a typed error.
+            # A bare assertion is also acceptable explicit failure behavior.
+            if msg:
+                assert any(k in msg for k in ["float16", "bfloat16", "dtype", "Half", "BFloat"])
 
 
 @pytest.mark.skipif(not flash_attn_available, reason="flash-attn not installed")

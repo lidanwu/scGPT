@@ -2,7 +2,7 @@
 
 ## Flash-Attn Diagnostic
 
-Script: `scripts/diagnostics/diagnose_flash_attn.py`
+Script: `scripts/diagnose_flash_attn.py`
 
 Purpose:
 - Verify whether scGPT is running FA1, FA2, or PyTorch attention path.
@@ -16,7 +16,7 @@ Run with the same Python interpreter/venv used for your training job.
 
 ```bash
 cd /mnt/data-raid0/github_drop/scGPT
-/path/to/python scripts/diagnostics/diagnose_flash_attn.py --help
+/path/to/python scripts/diagnose_flash_attn.py --help
 ```
 
 ### Common Commands
@@ -24,13 +24,13 @@ cd /mnt/data-raid0/github_drop/scGPT
 FA2 environment quick check:
 
 ```bash
-/path/to/python scripts/diagnostics/diagnose_flash_attn.py --amp --batch-sizes 64 256
+/path/to/python scripts/diagnose_flash_attn.py --amp --batch-sizes 64 256
 ```
 
 Checkpoint check (example for scGPT_human, trained with FA1):
 
 ```bash
-/path/to/python scripts/diagnostics/diagnose_flash_attn.py \
+/path/to/python scripts/diagnose_flash_attn.py \
   --ckpt /path/to/scGPT_human/best_model.pt \
   --vocab-file /path/to/scGPT_human/vocab.json \
   --input-emb-style continuous \
@@ -42,13 +42,13 @@ Checkpoint check (example for scGPT_human, trained with FA1):
 FA1 environment check:
 
 ```bash
-/path/to/python scripts/diagnostics/diagnose_flash_attn.py --amp --batch-sizes 64
+/path/to/python scripts/diagnose_flash_attn.py --amp --batch-sizes 64
 ```
 
 PyTorch-only baseline (disable fast transformer):
 
 ```bash
-/path/to/python scripts/diagnostics/diagnose_flash_attn.py --no-flash --amp --batch-sizes 64 256
+/path/to/python scripts/diagnose_flash_attn.py --no-flash --amp --batch-sizes 64 256
 ```
 
 ### Interpreting Output

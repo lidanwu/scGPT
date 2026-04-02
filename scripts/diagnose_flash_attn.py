@@ -12,10 +12,10 @@ Checks:
   5. Peak CUDA memory at batch_size=64 vs 256.
 
 Usage:
-    python scripts/diagnostics/diagnose_flash_attn.py                     # uses FA backend installed
-    python scripts/diagnostics/diagnose_flash_attn.py --no-flash          # force PyTorch path
-    python scripts/diagnostics/diagnose_flash_attn.py --ckpt path/to.pt   # load checkpoint
-    python scripts/diagnostics/diagnose_flash_attn.py --amp --dtype bf16  # recommended
+    python scripts/diagnose_flash_attn.py                     # uses FA backend installed
+    python scripts/diagnose_flash_attn.py --no-flash          # force PyTorch path
+    python scripts/diagnose_flash_attn.py --ckpt path/to.pt   # load checkpoint
+    python scripts/diagnose_flash_attn.py --amp --dtype bf16  # recommended when no GradScaler
 
 Notes:
     - Works in both FA1 and FA2 environments.
@@ -31,7 +31,7 @@ import torch
 import torch.nn as nn
 
 # ── allow running from repo root or arbitrary cwd without install ─────────────
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from scgpt.model import TransformerModel

@@ -1,6 +1,20 @@
-# scGPT
+# scGPT (modified)
 
-This is the official codebase for **scGPT: Towards Building a Foundation Model for Single-Cell Multi-omics Using Generative AI**.
+This repository is **modified** from the official codebase for **scGPT: Towards Building a Foundation Model for Single-Cell Multi-omics Using Generative AI**.
+
+The modified repository includes compatibility updates for both FlashAttention 1.x and 2.x.
+In particular, it supports `CUDA 12.8` and `flash-attn 2.8.3` for modern NVIDIA Blackwell GPUs
+while retaining backward compatibility with FA1-style checkpoints through parameter-name
+mapping during checkpoint loading.
+
+For quick backend and memory-path checks in your environment, use the diagnostic tool at
+[scripts/diagnostics/diagnose_flash_attn.py](scripts/diagnostics/diagnose_flash_attn.py).
+
+`pyproject.toml` is also updated to standard PEP 621 + `setuptools` so installs/builds no longer depend on Poetry tooling.
+
+
+## Original README
+Below is the README from the original repository at https://github.com/bowang-lab/scGPT.git. 
 
 [![Preprint](https://img.shields.io/badge/preprint-available-brightgreen)](https://www.biorxiv.org/content/10.1101/2023.04.30.538439) &nbsp;
 [![Documentation](https://img.shields.io/badge/docs-available-brightgreen)](https://scgpt.readthedocs.io/en/latest/) &nbsp;
@@ -70,7 +84,7 @@ Here is the list of pretrained models. Please find the links for downloading the
 
 ## Fine-tune scGPT for scRNA-seq integration
 
-Please see our example code in [examples/finetune_integration.py](examples/finetune_integration.py). By default, the script assumes the scGPT checkpoint folder stored in the `examples/save` directory.
+Please see our example code in [scripts/examples/finetune_integration.py](scripts/examples/finetune_integration.py). By default, the script assumes the scGPT checkpoint folder stored in the `scripts/examples/save` directory.
 
 ## To-do-list
 

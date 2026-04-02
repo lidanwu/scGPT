@@ -119,7 +119,10 @@ def attach_hooks(model: nn.Module) -> list:
     handles = []
     idx = 0
     for m in model.modules():
-        if m.__class__.__name__ == "FlashMHA":
+        # Match only our compat wrapper, not FA1's inner FlashMHA which shares the same
+        # class name but lives in flash_attn.flash_attention.
+        if (m.__class__.__name__ == "FlashMHA"
+                and m.__class__.__module__ == "scgpt.model.flash_attn_compat"):
             handles.append(m.register_forward_hook(_make_mha_hook(idx)))
             idx += 1
     return handles
@@ -218,9 +221,12 @@ def probe(
                 "use_flash_attn=False on FA2 MHA → dense fallback, "
                 "fix: pass use_flash_attn=True when constructing MHA"
             )
-        elif ufa == "attr-not-found" and impl_type != "_FA2FlashMHA":
+        elif (ufa == "attr-not-found"
+              and flash_attn_backend == "fa2"
+              and impl_type != "_FA2FlashMHA"):
+            # FA1 doesn't expose use_flash_attn at all — only warn for FA2 backend.
             issues.append(
-                "use_flash_attn attribute not found on MHA impl — "
+                "use_flash_attn attribute not found on FA2 MHA impl — "
                 "check FA2 version or module nesting"
             )
         if idtype == "torch.float32" and amp and not autocast_enabled:
